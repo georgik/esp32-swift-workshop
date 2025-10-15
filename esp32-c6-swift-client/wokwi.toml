@@ -1,0 +1,31 @@
+[wokwi]
+version = 1
+firmware = 'build/esp32-c6-swift-client.bin'
+elf = 'build/esp32-c6-swift-client.elf'
+
+[[wokwi.parts]]
+type = 'wokwi-esp32-c6'
+id = 'esp'
+attrs = { }
+
+[[wokwi.parts]]
+type = 'wokwi-neopixel'
+id = 'neo1'
+attrs = { pin = '8', pixels = '1' }
+
+[[wokwi.connections]]
+from = 'esp:8'
+to = 'neo1:DIN'
+
+[[wokwi.connections]]
+from = 'esp:3V3'
+to = 'neo1:VCC'
+
+[[wokwi.connections]]
+from = 'esp:GND.1'
+to = 'neo1:GND'
+
+[env]
+# Wokwi simulated WiFi credentials - matches the hardcoded values in Main.swift
+# Note: When running in Wokwi, you may need to modify Main.swift to use Wokwi-GUEST
+# or configure the Wokwi WiFi settings to match your hardcoded credentials

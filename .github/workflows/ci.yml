@@ -1,0 +1,299 @@
+name: ESP32-C6 Swift Workshop CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  ESP_IDF_VERSION: v5.3
+  SWIFT_VERSION: 6.2
+
+jobs:
+  # Code Quality Checks
+  code-quality:
+    name: Code Quality & Linting
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v2
+      with:
+        swift-version: ${{ env.SWIFT_VERSION }}
+        
+    - name: Install Swift Linting Tools
+      run: |
+        # Install SwiftLint
+        curl -L https://github.com/realm/SwiftLint/releases/latest/download/swiftlint_linux.zip -o swiftlint.zip
+        unzip swiftlint.zip
+        sudo mv swiftlint /usr/local/bin/
+        rm swiftlint.zip
+        
+        # Install swift-format
+        git clone https://github.com/apple/swift-format.git
+        cd swift-format
+        swift build -c release
+        sudo cp .build/release/swift-format /usr/local/bin/
+        cd ..
+        rm -rf swift-format
+        
+    - name: Verify Swift Installation
+      run: |
+        swift --version
+        swift-format --version
+        swiftlint version
+        
+    - name: Run Swift Linting
+      run: |
+        echo "🔍 Running comprehensive Swift linting..."
+        ./Scripts/lint.swift lint
+        
+    - name: Lint Markdown Files
+      uses: DavidAnson/markdownlint-action@v1
+      with:
+        files: '**/*.md'
+        ignore: 'node_modules/'
+        config: |
+          {
+            "MD013": { "line_length": 120 },
+            "MD033": false,
+            "MD041": false
+          }
+
+  # ESP-IDF Build Tests
+  build-esp-projects:
+    name: Build ESP-IDF Projects
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: [esp32-c6-mqtt-gateway, esp32-c6-swift-client]
+        
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      
+    - name: Setup ESP-IDF
+      uses: espressif/esp-idf-ci-action@v1
+      with:
+        esp_idf_version: ${{ env.ESP_IDF_VERSION }}
+        target: esp32c6
+        
+    - name: Setup Swift for ESP32 Build
+      if: matrix.project == 'esp32-c6-swift-client'
+      run: |
+        # Install Swift with Embedded support for RISC-V
+        wget -q https://download.swift.org/swift-6.2-release/ubuntu2204/swift-6.2-RELEASE/swift-6.2-RELEASE-ubuntu22.04.tar.gz
+        tar xzf swift-6.2-RELEASE-ubuntu22.04.tar.gz
+        sudo mv swift-6.2-RELEASE-ubuntu22.04 /opt/swift
+        echo "/opt/swift/usr/bin" >> $GITHUB_PATH
+        
+    - name: Verify Build Environment
+      run: |
+        echo "ESP-IDF Version: $(idf.py --version)"
+        echo "Target: esp32c6"
+        if [ "${{ matrix.project }}" == "esp32-c6-swift-client" ]; then
+          swift --version || echo "Swift not available for this build"
+        fi
+        
+    - name: Build ${{ matrix.project }}
+      working-directory: ${{ matrix.project }}
+      run: |
+        echo "🔨 Building ${{ matrix.project }}..."
+        idf.py set-target esp32c6
+        idf.py build
+        
+    - name: Check Build Artifacts
+      working-directory: ${{ matrix.project }}
+      run: |
+        echo "📦 Checking build artifacts..."
+        ls -la build/
+        if [ -f "build/bootloader/bootloader.bin" ]; then
+          echo "✅ Bootloader built successfully"
+        fi
+        if [ -f "build/${{ matrix.project }}.bin" ]; then
+          echo "✅ Application binary built successfully"
+          echo "Binary size: $(ls -lh build/${{ matrix.project }}.bin | awk '{print $5}')"
+        fi
+        
+    - name: Upload Build Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.project }}-build-artifacts
+        path: |
+          ${{ matrix.project }}/build/${{ matrix.project }}.bin
+          ${{ matrix.project }}/build/bootloader/bootloader.bin
+          ${{ matrix.project }}/build/partition_table/partition-table.bin
+        retention-days: 7
+
+  # Documentation and Content Validation
+  validate-workshop-content:
+    name: Validate Workshop Content
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      
+    - name: Validate Assignment Structure
+      run: |
+        echo "📚 Validating workshop assignment structure..."
+        EXPECTED_ASSIGNMENTS=(
+          "assignment-1.md"
+          "assignment-2.md"
+          "assignment-3.md"
+          "assignment-4.md"
+          "assignment-5.md"
+        )
+        
+        for assignment in "${EXPECTED_ASSIGNMENTS[@]}"; do
+          if [ -f "content/assignments/$assignment" ]; then
+            echo "✅ Found $assignment"
+          else
+            echo "❌ Missing $assignment"
+            exit 1
+          fi
+        done
+        
+    - name: Check Internal Links
+      run: |
+        echo "🔗 Checking internal links in workshop content..."
+        for file in content/assignments/*.md; do
+          if [ -f "$file" ]; then
+            # Check for references to assignments that might not exist
+            while IFS= read -r line; do
+              if [[ $line =~ assignment-[0-9]+\.md ]]; then
+                LINKED_FILE=$(echo "$line" | grep -o 'assignment-[0-9]\+\.md')
+                if [[ ! -f "content/assignments/$LINKED_FILE" ]]; then
+                  echo "❌ $(basename "$file"): Broken link to $LINKED_FILE"
+                  exit 1
+                fi
+              fi
+            done < "$file"
+          fi
+        done
+        echo "✅ All internal links are valid"
+        
+    - name: Validate Code Examples
+      run: |
+        echo "🧪 Validating code examples in assignments..."
+        python3 -c "
+import os
+import re
+import json
+
+def check_code_blocks():
+    assignment_dir = 'content/assignments'
+    issues = []
+    
+    for filename in os.listdir(assignment_dir):
+        if not filename.endswith('.md'):
+            continue
+            
+        filepath = os.path.join(assignment_dir, filename)
+        with open(filepath, 'r') as f:
+            content = f.read()
+            
+        # Check for code blocks with file references
+        code_blocks = re.findall(r'```(\w+).*?\n(.*?)\n```', content, re.DOTALL)
+        
+        for lang, code in code_blocks:
+            if lang in ['c', 'swift'] and len(code.strip()) > 10:
+                # Validate basic syntax patterns
+                if lang == 'c' and 'main(' in code and not code.strip().endswith('}'):
+                    issues.append(f'{filename}: Incomplete C code block')
+                elif lang == 'swift' and 'func ' in code and code.count('{') != code.count('}'):
+                    issues.append(f'{filename}: Unbalanced braces in Swift code')
+    
+    if issues:
+        for issue in issues:
+            print(f'⚠️  {issue}')
+        return False
+    return True
+
+if check_code_blocks():
+    print('✅ All code examples are valid')
+else:
+    exit(1)
+        "
+
+  # Integration Tests
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [code-quality, build-esp-projects]
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Python Environment
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install Test Dependencies
+      run: |
+        pip install paho-mqtt pytest asyncio flask flask-socketio python-nmap netifaces
+        
+    - name: Run Python Test Framework
+      run: |
+        echo "🧪 Running integration tests..."
+        if [ -f "tests/test_framework.py" ]; then
+          cd tests
+          python test_framework.py --dry-run
+        else
+          echo "⚠️  Test framework not found, skipping integration tests"
+        fi
+
+  # Release Preparation (on main branch)
+  prepare-release:
+    name: Prepare Release Assets
+    runs-on: ubuntu-latest
+    needs: [code-quality, build-esp-projects, validate-workshop-content, integration-tests]
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      
+    - name: Download Build Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: release-artifacts/
+        
+    - name: Create Workshop Package
+      run: |
+        echo "📦 Creating workshop release package..."
+        mkdir -p workshop-package/
+        
+        # Copy essential files
+        cp -r content/ workshop-package/
+        cp -r esp32-c6-mqtt-gateway/ workshop-package/
+        cp -r esp32-c6-swift-client/ workshop-package/
+        cp -r tests/ workshop-package/ 2>/dev/null || echo "No tests directory"
+        
+        # Copy build artifacts
+        if [ -d "release-artifacts/" ]; then
+          mkdir -p workshop-package/prebuilt-binaries/
+          cp -r release-artifacts/*/* workshop-package/prebuilt-binaries/ 2>/dev/null || echo "No build artifacts"
+        fi
+        
+        # Copy configuration files
+        cp Makefile workshop-package/ 2>/dev/null || echo "No Makefile"
+        cp .swift-format workshop-package/ 2>/dev/null || echo "No .swift-format"
+        cp README.md workshop-package/ 2>/dev/null || echo "No README.md"
+        
+        # Create archive
+        tar -czf esp32-c6-swift-workshop.tar.gz workshop-package/
+        
+    - name: Upload Release Package
+      uses: actions/upload-artifact@v4
+      with:
+        name: esp32-c6-swift-workshop-package
+        path: esp32-c6-swift-workshop.tar.gz
+        retention-days: 90

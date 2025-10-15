@@ -1,0 +1,36 @@
+[wokwi]
+version = 1
+firmware = 'build/esp32-c6-mqtt-gateway.bin'
+elf = 'build/esp32-c6-mqtt-gateway.elf'
+
+[[wokwi.parts]]
+type = 'wokwi-esp32-c6'
+id = 'esp'
+attrs = { }
+
+[[wokwi.parts]]  
+type = 'wokwi-led'
+id = 'led1'
+attrs = { color = 'red' }
+
+[[wokwi.parts]]
+type = 'wokwi-resistor'
+id = 'r1'
+attrs = { value = '220' }
+
+[[wokwi.connections]]
+from = 'esp:8'
+to = 'r1:1'
+
+[[wokwi.connections]]
+from = 'r1:2' 
+to = 'led1:A'
+
+[[wokwi.connections]]
+from = 'led1:C'
+to = 'esp:GND.1'
+
+[env]
+# Wokwi simulated WiFi credentials
+CONFIG_ESP_WIFI_SSID = "Wokwi-GUEST"
+CONFIG_ESP_WIFI_PASSWORD = ""
